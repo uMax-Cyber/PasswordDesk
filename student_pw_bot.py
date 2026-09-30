@@ -304,15 +304,33 @@ def referenced_in_new_text(user, fresh_low):
     nick = upn.split("@")[0]
     if len(nick) > 2 and nick in t:
         return True
-    words = {w for w in re.split(r"[\s.,'`’-]+", (user.get("displayName") or "").lower()) if len(w) > 2}
+    # v13.4: имена собираем из displayName + givenName + surname. В каталоге displayName
+    # часто слитный («muhammadaminmamurjonov») — разбиение только по нему теряло фамилию,
+    # и гвард объявлял свежий запрос «аккаунтом из цитаты» (ложный блок 30.09).
+    name_parts = " ".join([user.get("displayName") or "", user.get("givenName") or "",
+                           user.get("surname") or ""]).lower()
+    words = {w for w in re.split(r"[\s.,'`’-]+", name_parts) if len(w) > 2}
     if not words:
         return False
     if all(w in t for w in words):
         return True
-    # «Petrov Ivan» в письме часто «Ivan Petrov»: фамилия + любое имя
+    # «Ivan Petrov» в письме часто «Petrov Ivan»: фамилия + любое имя
     surname = (user.get("surname") or "").lower()
-    return bool(surname) and surname in words and surname in t and any(
-        w in t for w in words if w != surname)
+    if surname and surname in words and surname in t and any(w in t for w in words if w != surname):
+        return True
+    # v13.4: опечатки и транслитерация (Mamarjonov ↔ Mamurjonov). Совпадением считается
+    # почти-совпавшая фамилия И присутствие имени ученика рядом — цитаты сюда не попадают
+    # (в fresh_low только свежая часть письма, см. newest_text).
+    if surname:
+        text_words = {w for w in re.split(r"[\s.,'`’»«()\-]+", t) if len(w) > 3}
+        near_surname = any(difflib.SequenceMatcher(None, surname, w).ratio() >= 0.85
+                           for w in text_words)
+        first = (user.get("givenName") or "").lower()
+        near_first = bool(first) and (first in t or any(
+            difflib.SequenceMatcher(None, first, w).ratio() >= 0.85 for w in text_words))
+        if near_surname and near_first:
+            return True
+    return False
 
 def local_hm(iso):
     """Локальное (Ташкент) время письма из ISO-строки Graph — AI и логи должны видеть
