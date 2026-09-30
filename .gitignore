@@ -1,0 +1,34 @@
+# секреты и конфигурация окружения
+.env
+*.env
+!.env.example
+state/
+secrets/
+*.secret
+auth.json
+*_creds.json
+cron/
+
+# состояние и журналы работы бота
+*_state.json
+o365_tokens.json
+*_audit.log
+*_alert.json
+bootstrap.log
+*.jsonl
+
+# выгрузки и данные учеников
+*.csv
+*.xlsx
+*.log
+
+# бэкапы и мусор
+*.bak
+*.bak.*
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
