@@ -144,6 +144,20 @@ def graph(method, path, body=None, delegated=False):
         err = e.read().decode(errors="replace")[:300]
         raise RuntimeError("HTTP %s %s: %s" % (e.code, path, err))
 
+def display_address(user_or_upn):
+    """Адрес для писем — ВСЕГДА в форме с точкой (first.last).
+
+    В каталоге встречаются адреса, записанные через «_» (наследие раннего импорта).
+    Школа читает и вводит адрес как first.last, поэтому наружу отдаём вариант с точкой.
+    Внутри (Graph, state, reset_log, проверка логином) остаётся настоящий UPN.
+    """
+    upn = user_or_upn if isinstance(user_or_upn, str) else (user_or_upn.get("userPrincipalName") or "")
+    if "@" not in upn:
+        return upn
+    local, dom = upn.split("@", 1)
+    return local.replace("_", ".") + "@" + dom
+
+
 def gen_password():
     # v9 (правило заказчика): пароль всегда ПРОСТОЙ: PW_PREFIX + 6 символов.
     # Без спецсимволов и путающихся пар (0/o, 1/l/i) — легко набрать ученику.
@@ -361,7 +375,7 @@ def clarify_question(label, cands, directory):
     for c in cands:
         v = directory.get((c or "").lower())
         if v:
-            people.append("%s (%s)" % (v["display"], v["upn"]))
+            people.append("%s (%s)" % (v["display"], display_address(v["upn"])))
     if len(people) == 1:
         return ("Hello! Just to be sure before we reset the password: is \"%s\" the same "
                 "student as %s? Please confirm and we will send the new password right away."
@@ -516,7 +530,7 @@ def audit_log(sender, target, action, extra=""):
     несуществующими сбросами (грабля 18.09: строки «сброс» за 12:13 от dry-run)."""
     lt = time.localtime()
     when = "%d %s %d, %02d:%02d" % (lt.tm_mday, MONTHS_RU[lt.tm_mon-1], lt.tm_year, lt.tm_hour, lt.tm_min)
-    line = "%s | %s | запросил: %s | %s%s" % (when, target, sender,
+    line = "%s | %s | запросил: %s | %s%s" % (when, display_address(target), sender,
                                               ACTION_RU.get(action, action),
                                               (" | " + extra) if extra else "")
     if DRY_RUN:
@@ -582,7 +596,10 @@ def reset_password(user, fixed_pwd=None):
     return pwd
 
 def create_student(first, last):
-    upn = ("%s.%s@" + UPN_DOMAIN) % (first.lower().replace("ʻ", "").replace("`", ""), last.lower().replace("ʻ", "").replace("`", ""))
+    # новые учётки — только first.last: без «_», пробелов и апострофов
+    # («Muhammad Umar» → muhammadumar.askarov)
+    clean = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower().replace("ʻ", "").replace("`", ""))
+    upn = ("%s.%s@" + UPN_DOMAIN) % (clean(first), clean(last))
     pwd = gen_password()
     body = {
         "accountEnabled": True,
@@ -749,11 +766,11 @@ def main():
                 if st:
                     status = "ACTIVE" if st["enabled"] else "DISABLED"
                     log.append("CHECK %s: %s, last sign-in: %s" % (st["upn"], status, st["last_signin"]))
-                    check_results.append("%s — account %s, last active: %s (%s)" % (st["upn"], status, st["last_signin"], guess_activity(st["last_signin"], st["enabled"])))
+                    check_results.append("%s — account %s, last active: %s (%s)" % (display_address(st["upn"]), status, st["last_signin"], guess_activity(st["last_signin"], st["enabled"])))
                     audit_log(frm, st["upn"], "check", "статус: %s, последний вход: %s" % (status, st["last_signin"]))
                 else:
                     log.append("CHECK %s: NOT FOUND" % t["upn"])
-                    check_results.append("%s — account NOT FOUND" % t["upn"])
+                    check_results.append("%s — account NOT FOUND" % display_address(t["upn"]))
                 continue
             user = find_user_by_upn(t["upn"])
             if not user:
@@ -803,17 +820,17 @@ def main():
                 same = just_reset.get(upn_l)
                 blocking = ("по аккаунту уже отправлен сброс %s (тот же эпизод)" % reset_when_ru(recent_ts),
                             ("%s — the password was reset %s and is the same for both requests: "
-                             "%s Password: %s" % (user["userPrincipalName"], reset_when_ru(recent_ts),
-                                                  user["userPrincipalName"], same))
+                             "%s Password: %s" % (display_address(user), reset_when_ru(recent_ts),
+                                                  display_address(user), same))
                             if same else
                             ("%s — the password has already been reset %s (a few minutes ago). Please use the "
                              "password from the most recent reply. If it still does not work, reply to this "
-                             "email and we will reset it again." % (user["userPrincipalName"], reset_when_ru(recent_ts))))
+                             "email and we will reset it again." % (display_address(user), reset_when_ru(recent_ts))))
             elif (was_reset_before(user["userPrincipalName"]) and not confirmed_now
                   and not referenced_in_new_text(user, body_low)):
                 blocking = ("аккаунт упомянут только в цитате",
                             "%s — this account has already been reset. If the student still needs a new "
-                            "password, please send a request naming the account." % user["userPrincipalName"])
+                            "password, please send a request naming the account." % display_address(user))
             if blocking:
                 why, note = blocking
                 log.append("SKIP %s (%s; пояснение в тред)" % (user["userPrincipalName"], why))
@@ -830,7 +847,7 @@ def main():
                 v = verify_password(user["userPrincipalName"], pwd)
                 audit_log(frm, user["userPrincipalName"], t["action"],
                           "пароль проверен: %s" % ("да" if v else ("НЕТ!" if v is False else "недоступна")))
-                results.append((user["userPrincipalName"], pwd))
+                results.append((display_address(user), pwd))
                 just_reset[upn_l] = pwd   # v12.2: для пояснений в соседних тредах того же эпизода
                 log.append("%s %s (%s) | проверка: %s" % (t["action"].upper(), user["userPrincipalName"], t.get("reason"), "✓" if v else ("✗" if v is False else "?")))
             except Exception as e:
